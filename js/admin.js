@@ -6,16 +6,14 @@ import {
   setText,
 } from "./supabase.js";
 
+const ADMIN_PASSWORD_KEY = "vote-admin-password";
+
 const setupError = document.querySelector("#admin-setup-error");
 const adminPanel = document.querySelector("#admin-panel");
 const authStatus = document.querySelector("#auth-status");
 const authForm = document.querySelector("#auth-form");
-const authEmail = document.querySelector("#auth-email");
 const authPassword = document.querySelector("#auth-password");
-const signupButton = document.querySelector("#signup-button");
-const logoutButton = document.querySelector("#logout-button");
-const bootstrapPanel = document.querySelector("#bootstrap-panel");
-const bootstrapButton = document.querySelector("#bootstrap-button");
+const lockButton = document.querySelector("#lock-button");
 const adminMessage = document.querySelector("#admin-message");
 const configForm = document.querySelector("#config-form");
 const configTitle = document.querySelector("#config-title");
@@ -33,13 +31,34 @@ const codeSummary = document.querySelector("#code-summary");
 const resultList = document.querySelector("#result-list");
 const resultSummary = document.querySelector("#result-summary");
 
+let adminPassword = sessionStorage.getItem(ADMIN_PASSWORD_KEY) ?? "";
 let candidateDrafts = [];
-let isAdmin = false;
 
 function showAdminMessage(message, tone = "normal") {
   adminMessage.textContent = message;
   adminMessage.style.color =
     tone === "error" ? "var(--danger)" : tone === "success" ? "var(--success)" : "var(--muted)";
+}
+
+function setUnlockedState(unlocked) {
+  setText(authStatus, unlocked ? "관리자 열림" : "잠금 상태");
+  adminPanel.classList.toggle("hidden", !unlocked);
+  lockButton.classList.toggle("hidden", !unlocked);
+  authPassword.value = unlocked ? adminPassword : "";
+
+  if (!unlocked) {
+    generatedCodes.value = "";
+  }
+}
+
+function rememberPassword(nextPassword) {
+  adminPassword = nextPassword;
+
+  if (nextPassword) {
+    sessionStorage.setItem(ADMIN_PASSWORD_KEY, nextPassword);
+  } else {
+    sessionStorage.removeItem(ADMIN_PASSWORD_KEY);
+  }
 }
 
 function randomCode(prefix) {
@@ -70,7 +89,6 @@ function createField(labelText, value, field, index, maxLength) {
 function sanitizeCandidates() {
   return candidateDrafts
     .map((candidate, index) => ({
-      id: candidate.id ?? null,
       name: candidate.name.trim(),
       description: candidate.description.trim(),
       display_order: index + 1,
@@ -82,7 +100,7 @@ function renderCandidateEditor() {
   candidateEditor.innerHTML = "";
 
   if (!candidateDrafts.length) {
-    candidateDrafts = [{ id: null, name: "", description: "" }];
+    candidateDrafts = [{ name: "", description: "" }];
   }
 
   const fragment = document.createDocumentFragment();
@@ -134,12 +152,6 @@ function renderCandidateEditor() {
       renderCandidateEditor();
     });
   });
-}
-
-function setAdminUiState(session) {
-  const email = session?.user?.email;
-  setText(authStatus, email ? `${email} 로그인됨` : "로그아웃 상태");
-  logoutButton.classList.toggle("hidden", !email);
 }
 
 function renderCodeList(codes) {
@@ -217,166 +229,74 @@ function renderResults(results, ballotCount) {
 
 async function loadAdminData() {
   const supabase = ensureSupabase();
+  const { data, error } = await supabase.rpc("get_admin_dashboard", {
+    admin_password: adminPassword,
+  });
 
-  const [
-    { data: config, error: configError },
-    { data: candidates, error: candidateError },
-    { data: codes, error: codeError },
-    { data: results, error: resultError },
-    { count: ballotCount, error: ballotError },
-  ] = await Promise.all([
-    supabase.from("app_config").select("*").eq("id", true).maybeSingle(),
-    supabase
-      .from("candidates")
-      .select("id, name, description, display_order")
-      .order("display_order", { ascending: true })
-      .order("id", { ascending: true }),
-    supabase
-      .from("voter_codes")
-      .select("id, code, used_at, created_at")
-      .order("created_at", { ascending: false })
-      .limit(100),
-    supabase.rpc("get_candidate_results"),
-    supabase.from("ballots").select("*", { count: "exact", head: true }),
-  ]);
-
-  if (configError || candidateError || codeError || resultError || ballotError) {
-    throw configError ?? candidateError ?? codeError ?? resultError ?? ballotError;
+  if (error) {
+    throw error;
   }
+
+  const config = data?.config ?? null;
+  const candidates = data?.candidates ?? [];
+  const codes = data?.codes ?? [];
+  const results = data?.results ?? [];
+  const ballotCount = Number(data?.ballot_count ?? 0);
 
   configTitle.value = config?.title ?? "우리의 투표";
   configStartsAt.value = formatDateTimeInput(config?.starts_at);
   configMaxVotes.value = String(config?.max_votes_per_voter ?? 1);
 
-  candidateDrafts =
-    candidates?.map((candidate) => ({
-      id: candidate.id,
-      name: candidate.name,
-      description: candidate.description ?? "",
-    })) ?? [];
+  candidateDrafts = candidates.map((candidate) => ({
+    name: candidate.name,
+    description: candidate.description ?? "",
+  }));
 
   renderCandidateEditor();
-  renderCodeList(codes ?? []);
-  renderResults(results ?? [], ballotCount ?? 0);
+  renderCodeList(codes);
+  renderResults(results, ballotCount);
 }
 
-async function refreshAdminState() {
-  if (!hasSupabaseConfig) {
-    setupError.classList.remove("hidden");
-    return;
-  }
-
-  const supabase = ensureSupabase();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
-  setAdminUiState(session);
-
-  if (!session) {
-    isAdmin = false;
-    bootstrapPanel.classList.add("hidden");
-    adminPanel.classList.add("hidden");
-    showAdminMessage("관리자 기능을 사용하려면 로그인해 주세요.");
-    return;
-  }
-
-  const [{ data: adminValue, error: adminError }, { data: hasAdminUsers, error: hasAdminError }] =
-    await Promise.all([supabase.rpc("is_admin"), supabase.rpc("has_admin_users")]);
-
-  if (adminError || hasAdminError) {
-    throw adminError ?? hasAdminError;
-  }
-
-  isAdmin = Boolean(adminValue);
-  bootstrapPanel.classList.toggle("hidden", isAdmin || Boolean(hasAdminUsers));
-  adminPanel.classList.toggle("hidden", !isAdmin);
-
-  if (isAdmin) {
-    showAdminMessage("관리자 권한으로 로그인되어 있습니다.");
-    await loadAdminData();
-  } else if (hasAdminUsers) {
-    showAdminMessage("이 계정은 관리자 권한이 없습니다.", "error");
-  } else {
-    showAdminMessage("첫 관리자 등록을 진행해 주세요.");
-  }
-}
-
-async function handleLogin(event) {
+async function unlockAdmin(event) {
   event.preventDefault();
-  showAdminMessage("로그인 중입니다.");
+
+  const nextPassword = authPassword.value.trim();
+
+  if (!nextPassword) {
+    showAdminMessage("관리자 비밀번호를 입력해 주세요.", "error");
+    return;
+  }
+
+  showAdminMessage("관리자 확인 중입니다.");
 
   try {
     const supabase = ensureSupabase();
-    const { error } = await supabase.auth.signInWithPassword({
-      email: authEmail.value.trim(),
-      password: authPassword.value,
+    const { data, error } = await supabase.rpc("verify_admin_password", {
+      admin_password: nextPassword,
     });
 
     if (error) {
       throw error;
     }
 
-    authPassword.value = "";
-    await refreshAdminState();
+    if (!data) {
+      showAdminMessage("관리자 비밀번호가 올바르지 않습니다.", "error");
+      return;
+    }
+
+    rememberPassword(nextPassword);
+    setUnlockedState(true);
+    await loadAdminData();
+    showAdminMessage("관리자 화면이 열렸습니다.", "success");
   } catch (error) {
-    showAdminMessage(error.message || "로그인에 실패했습니다.", "error");
+    showAdminMessage(error.message || "관리자 확인에 실패했습니다.", "error");
   }
 }
 
-async function handleSignup() {
-  showAdminMessage("회원가입을 요청하고 있습니다.");
-
-  try {
-    const supabase = ensureSupabase();
-    const { error } = await supabase.auth.signUp({
-      email: authEmail.value.trim(),
-      password: authPassword.value,
-    });
-
-    if (error) {
-      throw error;
-    }
-
-    showAdminMessage("회원가입 요청이 완료되었습니다. 이메일 인증이 필요할 수 있습니다.", "success");
-  } catch (error) {
-    showAdminMessage(error.message || "회원가입에 실패했습니다.", "error");
-  }
-}
-
-async function handleLogout() {
-  try {
-    const supabase = ensureSupabase();
-    const { error } = await supabase.auth.signOut();
-
-    if (error) {
-      throw error;
-    }
-
-    await refreshAdminState();
-  } catch (error) {
-    showAdminMessage(error.message || "로그아웃에 실패했습니다.", "error");
-  }
-}
-
-async function handleBootstrapAdmin() {
-  bootstrapButton.disabled = true;
-
-  try {
-    const supabase = ensureSupabase();
-    const { error } = await supabase.rpc("bootstrap_admin");
-
-    if (error) {
-      throw error;
-    }
-
-    showAdminMessage("첫 관리자 등록이 완료되었습니다.", "success");
-    await refreshAdminState();
-  } catch (error) {
-    showAdminMessage(error.message || "관리자 등록에 실패했습니다.", "error");
-  } finally {
-    bootstrapButton.disabled = false;
-  }
+function lockAdmin() {
+  rememberPassword("");
+  setUnlockedState(false);
+  showAdminMessage("관리자 화면을 잠갔습니다.");
 }
 
 async function saveConfig(event) {
@@ -389,11 +309,11 @@ async function saveConfig(event) {
 
   try {
     const supabase = ensureSupabase();
-    const { error } = await supabase.from("app_config").upsert({
-      id: true,
-      title: configTitle.value.trim(),
-      starts_at: new Date(configStartsAt.value).toISOString(),
-      max_votes_per_voter: Number(configMaxVotes.value),
+    const { error } = await supabase.rpc("save_admin_config", {
+      admin_password: adminPassword,
+      title_input: configTitle.value.trim(),
+      starts_at_input: new Date(configStartsAt.value).toISOString(),
+      max_votes_input: Number(configMaxVotes.value),
     });
 
     if (error) {
@@ -419,40 +339,13 @@ async function saveCandidates(event) {
 
   try {
     const supabase = ensureSupabase();
-    const { data: existingCandidates, error: existingError } = await supabase
-      .from("candidates")
-      .select("id");
+    const { error } = await supabase.rpc("replace_candidates", {
+      admin_password: adminPassword,
+      candidates_input: candidates,
+    });
 
-    if (existingError) {
-      throw existingError;
-    }
-
-    const nextIds = new Set(
-      candidates.filter((candidate) => candidate.id).map((candidate) => candidate.id),
-    );
-    const deleteIds = (existingCandidates ?? [])
-      .map((candidate) => candidate.id)
-      .filter((id) => !nextIds.has(id));
-
-    if (deleteIds.length) {
-      const { error: deleteError } = await supabase.from("candidates").delete().in("id", deleteIds);
-
-      if (deleteError) {
-        throw deleteError;
-      }
-    }
-
-    const payload = candidates.map((candidate) => ({
-      ...(candidate.id ? { id: candidate.id } : {}),
-      name: candidate.name,
-      description: candidate.description,
-      display_order: candidate.display_order,
-    }));
-
-    const { error: upsertError } = await supabase.from("candidates").upsert(payload);
-
-    if (upsertError) {
-      throw upsertError;
+    if (error) {
+      throw error;
     }
 
     showAdminMessage("후보 목록이 저장되었습니다.", "success");
@@ -479,17 +372,20 @@ async function generateCodes(event) {
     uniqueCodes.add(randomCode(prefix));
   }
 
-  const payload = Array.from(uniqueCodes, (code) => ({ code }));
+  const codes = Array.from(uniqueCodes);
 
   try {
     const supabase = ensureSupabase();
-    const { error } = await supabase.from("voter_codes").insert(payload);
+    const { error } = await supabase.rpc("create_voter_codes", {
+      admin_password: adminPassword,
+      codes_input: codes,
+    });
 
     if (error) {
       throw error;
     }
 
-    generatedCodes.value = payload.map((item) => item.code).join("\n");
+    generatedCodes.value = codes.join("\n");
     showAdminMessage(`${count}개의 참여코드를 생성했습니다.`, "success");
     await loadAdminData();
   } catch (error) {
@@ -497,31 +393,42 @@ async function generateCodes(event) {
   }
 }
 
+async function restoreAdminSession() {
+  if (!hasSupabaseConfig) {
+    setupError.classList.remove("hidden");
+    return;
+  }
+
+  if (!adminPassword) {
+    setUnlockedState(false);
+    showAdminMessage("관리자 비밀번호를 입력해 주세요.");
+    return;
+  }
+
+  setUnlockedState(true);
+
+  try {
+    await loadAdminData();
+    showAdminMessage("이전 관리자 세션을 복원했습니다.", "success");
+  } catch (error) {
+    rememberPassword("");
+    setUnlockedState(false);
+    showAdminMessage(error.message || "관리자 세션 복원에 실패했습니다.", "error");
+  }
+}
+
 addCandidateButton.addEventListener("click", () => {
-  candidateDrafts.push({ id: null, name: "", description: "" });
+  candidateDrafts.push({ name: "", description: "" });
   renderCandidateEditor();
 });
 
-authForm.addEventListener("submit", handleLogin);
-signupButton.addEventListener("click", handleSignup);
-logoutButton.addEventListener("click", handleLogout);
-bootstrapButton.addEventListener("click", handleBootstrapAdmin);
+authForm.addEventListener("submit", unlockAdmin);
+lockButton.addEventListener("click", lockAdmin);
 configForm.addEventListener("submit", saveConfig);
 candidateForm.addEventListener("submit", saveCandidates);
 codeForm.addEventListener("submit", generateCodes);
 
-if (hasSupabaseConfig) {
-  const supabase = ensureSupabase();
-
-  supabase.auth.onAuthStateChange(() => {
-    refreshAdminState().catch((error) => {
-      console.error(error);
-      showAdminMessage(error.message || "관리자 상태를 새로고침하지 못했습니다.", "error");
-    });
-  });
-}
-
-refreshAdminState().catch((error) => {
+restoreAdminSession().catch((error) => {
   console.error(error);
   showAdminMessage(error.message || "관리자 페이지를 불러오지 못했습니다.", "error");
 });

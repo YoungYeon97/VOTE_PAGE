@@ -1,9 +1,28 @@
 create extension if not exists pgcrypto;
 
-create table if not exists public.admin_users (
-  user_id uuid primary key references auth.users (id) on delete cascade,
-  created_at timestamptz not null default now()
+drop view if exists public.candidate_results;
+drop table if exists public.admin_users cascade;
+
+drop function if exists public.is_admin();
+drop function if exists public.has_admin_users();
+drop function if exists public.bootstrap_admin();
+drop function if exists public.get_candidate_results();
+drop function if exists public.verify_admin_password(text);
+drop function if exists public.get_admin_dashboard(text);
+drop function if exists public.save_admin_config(text, text, timestamptz, integer);
+drop function if exists public.replace_candidates(text, jsonb);
+drop function if exists public.create_voter_codes(text, text[]);
+drop function if exists public.admin_password_matches(text);
+
+create table if not exists public.admin_settings (
+  id boolean primary key default true check (id),
+  password_hash text not null,
+  updated_at timestamptz not null default now()
 );
+
+insert into public.admin_settings (id, password_hash)
+values (true, crypt('1111', gen_salt('bf')))
+on conflict (id) do nothing;
 
 create table if not exists public.app_config (
   id boolean primary key default true check (id),
@@ -58,7 +77,7 @@ before update on public.app_config
 for each row
 execute function public.touch_app_config_updated_at();
 
-create or replace function public.is_admin()
+create or replace function public.admin_password_matches(admin_password text)
 returns boolean
 language sql
 stable
@@ -67,45 +86,20 @@ set search_path = public
 as $$
   select exists (
     select 1
-    from public.admin_users
-    where user_id = auth.uid()
+    from public.admin_settings
+    where id = true
+      and password_hash = crypt(coalesce(admin_password, ''), password_hash)
   );
 $$;
 
-create or replace function public.has_admin_users()
+create or replace function public.verify_admin_password(admin_password text)
 returns boolean
 language sql
 stable
 security definer
 set search_path = public
 as $$
-  select exists (select 1 from public.admin_users);
-$$;
-
-create or replace function public.bootstrap_admin()
-returns boolean
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  if auth.uid() is null then
-    raise exception '로그인이 필요합니다.';
-  end if;
-
-  if exists (select 1 from public.admin_users where user_id = auth.uid()) then
-    return true;
-  end if;
-
-  if exists (select 1 from public.admin_users) then
-    raise exception '이미 관리자가 등록되어 있습니다.';
-  end if;
-
-  insert into public.admin_users (user_id)
-  values (auth.uid());
-
-  return true;
-end;
+  select public.admin_password_matches(admin_password);
 $$;
 
 create or replace function public.submit_vote(code_input text, candidate_ids_input bigint[])
@@ -196,113 +190,231 @@ exception
 end;
 $$;
 
-create or replace function public.get_candidate_results()
-returns table (
-  candidate_id bigint,
-  candidate_name text,
-  description text,
-  display_order integer,
-  vote_count integer
-)
+create or replace function public.get_admin_dashboard(admin_password text)
+returns jsonb
 language plpgsql
-stable
+security definer
+set search_path = public
+as $$
+declare
+  payload jsonb;
+begin
+  if not public.admin_password_matches(admin_password) then
+    raise exception '관리자 비밀번호가 올바르지 않습니다.';
+  end if;
+
+  select jsonb_build_object(
+    'config',
+    (
+      select to_jsonb(ac)
+      from public.app_config ac
+      where ac.id = true
+    ),
+    'candidates',
+    coalesce(
+      (
+        select jsonb_agg(to_jsonb(candidate_rows) order by candidate_rows.display_order, candidate_rows.id)
+        from (
+          select id, name, description, display_order
+          from public.candidates
+          order by display_order asc, id asc
+        ) candidate_rows
+      ),
+      '[]'::jsonb
+    ),
+    'codes',
+    coalesce(
+      (
+        select jsonb_agg(to_jsonb(code_rows) order by code_rows.created_at desc)
+        from (
+          select id, code, used_at, created_at
+          from public.voter_codes
+          order by created_at desc
+          limit 100
+        ) code_rows
+      ),
+      '[]'::jsonb
+    ),
+    'results',
+    coalesce(
+      (
+        select jsonb_agg(to_jsonb(result_rows) order by result_rows.display_order, result_rows.candidate_id)
+        from (
+          select
+            c.id as candidate_id,
+            c.name as candidate_name,
+            c.description,
+            c.display_order,
+            count(bs.ballot_id)::integer as vote_count
+          from public.candidates c
+          left join public.ballot_selections bs
+            on bs.candidate_id = c.id
+          group by c.id, c.name, c.description, c.display_order
+          order by c.display_order asc, c.id asc
+        ) result_rows
+      ),
+      '[]'::jsonb
+    ),
+    'ballot_count',
+    (
+      select count(*)::integer
+      from public.ballots
+    )
+  )
+  into payload;
+
+  return payload;
+end;
+$$;
+
+create or replace function public.save_admin_config(
+  admin_password text,
+  title_input text,
+  starts_at_input timestamptz,
+  max_votes_input integer
+)
+returns boolean
+language plpgsql
 security definer
 set search_path = public
 as $$
 begin
-  if not public.is_admin() then
-    raise exception '관리자 권한이 필요합니다.';
+  if not public.admin_password_matches(admin_password) then
+    raise exception '관리자 비밀번호가 올바르지 않습니다.';
   end if;
 
-  return query
+  if title_input is null or btrim(title_input) = '' then
+    raise exception '투표 제목을 입력해 주세요.';
+  end if;
+
+  if starts_at_input is null then
+    raise exception '공개 시작 시각을 입력해 주세요.';
+  end if;
+
+  if max_votes_input is null or max_votes_input < 1 or max_votes_input > 20 then
+    raise exception '최대 선택 수는 1 이상 20 이하만 가능합니다.';
+  end if;
+
+  if exists (select 1 from public.ballots) then
+    raise exception '이미 투표가 들어와 기본 설정을 변경할 수 없습니다.';
+  end if;
+
+  insert into public.app_config (id, title, starts_at, max_votes_per_voter)
+  values (true, btrim(title_input), starts_at_input, max_votes_input)
+  on conflict (id) do update
+  set
+    title = excluded.title,
+    starts_at = excluded.starts_at,
+    max_votes_per_voter = excluded.max_votes_per_voter;
+
+  return true;
+end;
+$$;
+
+create or replace function public.replace_candidates(admin_password text, candidates_input jsonb)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  inserted_count integer;
+begin
+  if not public.admin_password_matches(admin_password) then
+    raise exception '관리자 비밀번호가 올바르지 않습니다.';
+  end if;
+
+  if jsonb_typeof(candidates_input) <> 'array' then
+    raise exception '후보 목록 형식이 올바르지 않습니다.';
+  end if;
+
+  if exists (select 1 from public.ballots) then
+    raise exception '이미 투표가 들어와 후보를 변경할 수 없습니다.';
+  end if;
+
+  delete from public.candidates;
+
+  insert into public.candidates (name, description, display_order)
   select
-    c.id as candidate_id,
-    c.name as candidate_name,
-    c.description,
-    c.display_order,
-    count(bs.ballot_id)::integer as vote_count
-  from public.candidates c
-  left join public.ballot_selections bs
-    on c.id = bs.candidate_id
-  group by c.id, c.name, c.description, c.display_order
-  order by c.display_order asc, c.id asc;
+    btrim(coalesce(candidate_value->>'name', '')),
+    btrim(coalesce(candidate_value->>'description', '')),
+    ordinality::integer
+  from jsonb_array_elements(candidates_input) with ordinality as items(candidate_value, ordinality)
+  where btrim(coalesce(candidate_value->>'name', '')) <> '';
+
+  get diagnostics inserted_count = row_count;
+
+  if inserted_count = 0 then
+    raise exception '최소 1명의 후보를 입력해 주세요.';
+  end if;
+
+  return true;
+end;
+$$;
+
+create or replace function public.create_voter_codes(admin_password text, codes_input text[])
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  inserted_count integer;
+begin
+  if not public.admin_password_matches(admin_password) then
+    raise exception '관리자 비밀번호가 올바르지 않습니다.';
+  end if;
+
+  if codes_input is null or cardinality(codes_input) = 0 then
+    raise exception '생성할 참여코드가 없습니다.';
+  end if;
+
+  insert into public.voter_codes (code)
+  select distinct upper(btrim(code_value))
+  from unnest(codes_input) as code_value
+  where btrim(code_value) <> '';
+
+  get diagnostics inserted_count = row_count;
+
+  if inserted_count = 0 then
+    raise exception '생성할 참여코드가 없습니다.';
+  end if;
+
+  return inserted_count;
 end;
 $$;
 
 grant usage on schema public to anon, authenticated;
-grant usage, select on all sequences in schema public to authenticated;
 grant select on public.app_config to anon, authenticated;
 grant select on public.candidates to anon, authenticated;
-grant select, insert, update, delete on public.app_config to authenticated;
-grant select, insert, update, delete on public.candidates to authenticated;
-grant select, insert, update, delete on public.voter_codes to authenticated;
-grant select on public.ballots to authenticated;
-grant execute on function public.is_admin() to authenticated;
-grant execute on function public.has_admin_users() to authenticated;
-grant execute on function public.bootstrap_admin() to authenticated;
-grant execute on function public.get_candidate_results() to authenticated;
+grant execute on function public.verify_admin_password(text) to anon, authenticated;
+grant execute on function public.get_admin_dashboard(text) to anon, authenticated;
+grant execute on function public.save_admin_config(text, text, timestamptz, integer) to anon, authenticated;
+grant execute on function public.replace_candidates(text, jsonb) to anon, authenticated;
+grant execute on function public.create_voter_codes(text, text[]) to anon, authenticated;
 grant execute on function public.submit_vote(text, bigint[]) to anon, authenticated;
 
-alter table public.admin_users enable row level security;
+alter table public.admin_settings enable row level security;
 alter table public.app_config enable row level security;
 alter table public.candidates enable row level security;
 alter table public.voter_codes enable row level security;
 alter table public.ballots enable row level security;
 alter table public.ballot_selections enable row level security;
 
+drop policy if exists "Admins manage config" on public.app_config;
 drop policy if exists "Public can read config" on public.app_config;
+drop policy if exists "Admins manage candidates" on public.candidates;
+drop policy if exists "Public can read candidates" on public.candidates;
+drop policy if exists "Admins manage voter codes" on public.voter_codes;
+drop policy if exists "Admins read ballots" on public.ballots;
+drop policy if exists "Admins read ballot selections" on public.ballot_selections;
+
 create policy "Public can read config"
 on public.app_config
 for select
 using (true);
 
-drop policy if exists "Admins manage config" on public.app_config;
-create policy "Admins manage config"
-on public.app_config
-for all
-to authenticated
-using (public.is_admin())
-with check (public.is_admin());
-
-drop policy if exists "Public can read candidates" on public.candidates;
 create policy "Public can read candidates"
 on public.candidates
 for select
 using (true);
-
-drop policy if exists "Admins manage candidates" on public.candidates;
-create policy "Admins manage candidates"
-on public.candidates
-for all
-to authenticated
-using (public.is_admin())
-with check (public.is_admin());
-
-drop policy if exists "Admins read admin users" on public.admin_users;
-create policy "Admins read admin users"
-on public.admin_users
-for select
-to authenticated
-using (public.is_admin());
-
-drop policy if exists "Admins manage voter codes" on public.voter_codes;
-create policy "Admins manage voter codes"
-on public.voter_codes
-for all
-to authenticated
-using (public.is_admin())
-with check (public.is_admin());
-
-drop policy if exists "Admins read ballots" on public.ballots;
-create policy "Admins read ballots"
-on public.ballots
-for select
-to authenticated
-using (public.is_admin());
-
-drop policy if exists "Admins read ballot selections" on public.ballot_selections;
-create policy "Admins read ballot selections"
-on public.ballot_selections
-for select
-to authenticated
-using (public.is_admin());
