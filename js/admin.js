@@ -1,6 +1,5 @@
 import {
   ensureSupabase,
-  formatDateTime,
   formatDateTimeInput,
   hasSupabaseConfig,
   setText,
@@ -22,12 +21,10 @@ const configMaxVotes = document.querySelector("#config-max-votes");
 const candidateForm = document.querySelector("#candidate-form");
 const candidateEditor = document.querySelector("#candidate-editor");
 const addCandidateButton = document.querySelector("#add-candidate-button");
-const codeForm = document.querySelector("#code-form");
-const codeCount = document.querySelector("#code-count");
-const codePrefix = document.querySelector("#code-prefix");
-const generatedCodes = document.querySelector("#generated-codes");
-const codeList = document.querySelector("#code-list");
-const codeSummary = document.querySelector("#code-summary");
+const allowedVotersForm = document.querySelector("#allowed-voters-form");
+const allowedVotersInput = document.querySelector("#allowed-voters-input");
+const voterList = document.querySelector("#voter-list");
+const voterSummary = document.querySelector("#voter-summary");
 const resultList = document.querySelector("#result-list");
 const resultSummary = document.querySelector("#result-summary");
 
@@ -44,10 +41,9 @@ function setUnlockedState(unlocked) {
   setText(authStatus, unlocked ? "관리자 열림" : "잠금 상태");
   adminPanel.classList.toggle("hidden", !unlocked);
   lockButton.classList.toggle("hidden", !unlocked);
-  authPassword.value = unlocked ? adminPassword : "";
 
-  if (!unlocked) {
-    generatedCodes.value = "";
+  if (authPassword) {
+    authPassword.value = unlocked ? adminPassword : "";
   }
 }
 
@@ -59,13 +55,6 @@ function rememberPassword(nextPassword) {
   } else {
     sessionStorage.removeItem(ADMIN_PASSWORD_KEY);
   }
-}
-
-function randomCode(prefix) {
-  const values = new Uint32Array(1);
-  window.crypto.getRandomValues(values);
-  const base = values[0].toString(36).toUpperCase().padStart(7, "0").slice(0, 6);
-  return prefix ? `${prefix.toUpperCase()}-${base}` : base;
 }
 
 function createField(labelText, value, field, index, maxLength) {
@@ -94,6 +83,13 @@ function sanitizeCandidates() {
       display_order: index + 1,
     }))
     .filter((candidate) => candidate.name);
+}
+
+function sanitizeAllowedVoters() {
+  return allowedVotersInput.value
+    .split(/\r?\n/)
+    .map((name) => name.trim())
+    .filter(Boolean);
 }
 
 function renderCandidateEditor() {
@@ -154,45 +150,34 @@ function renderCandidateEditor() {
   });
 }
 
-function renderCodeList(codes) {
-  codeList.innerHTML = "";
+function renderAllowedVoters(voters) {
+  voterList.innerHTML = "";
 
-  if (!codes.length) {
-    setText(codeSummary, "생성된 참여코드가 없습니다.");
-    codeList.innerHTML = "<p>참여코드를 먼저 생성해 주세요.</p>";
+  const votedCount = voters.filter((voter) => voter.has_voted).length;
+  setText(voterSummary, `등록 ${voters.length}명 중 ${votedCount}명 투표 완료`);
+
+  if (!voters.length) {
+    voterList.innerHTML = "<p>등록된 이름이 없습니다.</p>";
     return;
   }
 
-  const usedCount = codes.filter((code) => code.used_at).length;
-  setText(codeSummary, `최근 코드 ${codes.length}개 중 ${usedCount}개 사용됨`);
-
   const fragment = document.createDocumentFragment();
 
-  codes.forEach((code) => {
+  voters.forEach((voter) => {
     const card = document.createElement("article");
     card.className = "list-card";
 
     const title = document.createElement("h3");
-    title.textContent = code.code;
+    title.textContent = voter.voter_name;
 
     const status = document.createElement("p");
-    status.textContent = code.used_at ? "사용 완료" : "미사용";
+    status.textContent = voter.has_voted ? "투표 완료" : "미투표";
 
-    const created = document.createElement("p");
-    created.textContent = `생성: ${formatDateTime(code.created_at)}`;
-
-    card.append(title, status, created);
-
-    if (code.used_at) {
-      const used = document.createElement("p");
-      used.textContent = `사용: ${formatDateTime(code.used_at)}`;
-      card.append(used);
-    }
-
+    card.append(title, status);
     fragment.appendChild(card);
   });
 
-  codeList.appendChild(fragment);
+  voterList.appendChild(fragment);
 }
 
 function renderResults(results, ballotCount) {
@@ -239,7 +224,7 @@ async function loadAdminData() {
 
   const config = data?.config ?? null;
   const candidates = data?.candidates ?? [];
-  const codes = data?.codes ?? [];
+  const allowedVoters = data?.allowed_voters ?? [];
   const results = data?.results ?? [];
   const ballotCount = Number(data?.ballot_count ?? 0);
 
@@ -252,8 +237,10 @@ async function loadAdminData() {
     description: candidate.description ?? "",
   }));
 
+  allowedVotersInput.value = allowedVoters.map((voter) => voter.voter_name).join("\n");
+
   renderCandidateEditor();
-  renderCodeList(codes);
+  renderAllowedVoters(allowedVoters);
   renderResults(results, ballotCount);
 }
 
@@ -355,41 +342,31 @@ async function saveCandidates(event) {
   }
 }
 
-async function generateCodes(event) {
+async function saveAllowedVoters(event) {
   event.preventDefault();
 
-  const count = Number(codeCount.value);
-  const prefix = codePrefix.value.trim();
+  const voterNames = sanitizeAllowedVoters();
 
-  if (!count || count < 1) {
-    showAdminMessage("생성할 개수를 1 이상 입력해 주세요.", "error");
+  if (!voterNames.length) {
+    showAdminMessage("최소 1명의 투표 가능 이름을 입력해 주세요.", "error");
     return;
   }
 
-  const uniqueCodes = new Set();
-
-  while (uniqueCodes.size < count) {
-    uniqueCodes.add(randomCode(prefix));
-  }
-
-  const codes = Array.from(uniqueCodes);
-
   try {
     const supabase = ensureSupabase();
-    const { error } = await supabase.rpc("create_voter_codes", {
+    const { error } = await supabase.rpc("replace_allowed_voters", {
       admin_password: adminPassword,
-      codes_input: codes,
+      voter_names_input: voterNames,
     });
 
     if (error) {
       throw error;
     }
 
-    generatedCodes.value = codes.join("\n");
-    showAdminMessage(`${count}개의 참여코드를 생성했습니다.`, "success");
+    showAdminMessage("투표 가능 이름 목록이 저장되었습니다.", "success");
     await loadAdminData();
   } catch (error) {
-    showAdminMessage(error.message || "참여코드 생성에 실패했습니다.", "error");
+    showAdminMessage(error.message || "이름 목록 저장에 실패했습니다.", "error");
   }
 }
 
@@ -426,7 +403,7 @@ authForm.addEventListener("submit", unlockAdmin);
 lockButton.addEventListener("click", lockAdmin);
 configForm.addEventListener("submit", saveConfig);
 candidateForm.addEventListener("submit", saveCandidates);
-codeForm.addEventListener("submit", generateCodes);
+allowedVotersForm.addEventListener("submit", saveAllowedVoters);
 
 restoreAdminSession().catch((error) => {
   console.error(error);

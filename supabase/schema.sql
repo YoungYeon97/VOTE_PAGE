@@ -2,6 +2,10 @@ create extension if not exists pgcrypto;
 
 drop view if exists public.candidate_results;
 drop table if exists public.admin_users cascade;
+drop table if exists public.voter_entries cascade;
+drop table if exists public.allowed_voters cascade;
+drop table if exists public.anonymous_ballot_selections cascade;
+drop table if exists public.anonymous_ballots cascade;
 
 drop function if exists public.is_admin();
 drop function if exists public.has_admin_users();
@@ -11,8 +15,11 @@ drop function if exists public.verify_admin_password(text);
 drop function if exists public.get_admin_dashboard(text);
 drop function if exists public.save_admin_config(text, text, timestamptz, integer);
 drop function if exists public.replace_candidates(text, jsonb);
+drop function if exists public.replace_allowed_voters(text, jsonb);
 drop function if exists public.create_voter_codes(text, text[]);
 drop function if exists public.admin_password_matches(text);
+drop function if exists public.submit_vote(text, bigint[]);
+drop function if exists public.submit_vote(text, text, bigint[]);
 
 create table if not exists public.admin_settings (
   id boolean primary key default true check (id),
@@ -21,7 +28,7 @@ create table if not exists public.admin_settings (
 );
 
 insert into public.admin_settings (id, password_hash)
-values (true, crypt('1111', gen_salt('bf')))
+values (true, extensions.crypt('1111', extensions.gen_salt('bf')))
 on conflict (id) do nothing;
 
 create table if not exists public.app_config (
@@ -40,23 +47,22 @@ create table if not exists public.candidates (
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.voter_codes (
+create table if not exists public.allowed_voters (
   id bigint generated always as identity primary key,
-  code text not null unique,
-  used_at timestamptz,
+  voter_name text not null check (char_length(voter_name) between 1 and 40),
+  voter_name_key text not null unique,
+  display_order integer not null default 1,
+  voted_at timestamptz,
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.ballots (
-  id bigint generated always as identity primary key,
-  voter_code_id bigint not null unique references public.voter_codes (id) on delete restrict,
-  created_at timestamptz not null default now()
+create table if not exists public.anonymous_ballots (
+  id uuid primary key default extensions.gen_random_uuid()
 );
 
-create table if not exists public.ballot_selections (
-  ballot_id bigint not null references public.ballots (id) on delete cascade,
+create table if not exists public.anonymous_ballot_selections (
+  ballot_id uuid not null references public.anonymous_ballots (id) on delete cascade,
   candidate_id bigint not null references public.candidates (id) on delete restrict,
-  created_at timestamptz not null default now(),
   primary key (ballot_id, candidate_id)
 );
 
@@ -88,7 +94,7 @@ as $$
     select 1
     from public.admin_settings
     where id = true
-      and password_hash = crypt(coalesce(admin_password, ''), password_hash)
+      and password_hash = extensions.crypt(coalesce(admin_password, ''), password_hash)
   );
 $$;
 
@@ -102,22 +108,35 @@ as $$
   select public.admin_password_matches(admin_password);
 $$;
 
-create or replace function public.submit_vote(code_input text, candidate_ids_input bigint[])
-returns bigint
+create or replace function public.submit_vote(
+  voter_name_input text,
+  candidate_ids_input bigint[]
+)
+returns uuid
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
   config_row public.app_config%rowtype;
-  voter_code_row public.voter_codes%rowtype;
+  allowed_voter_row public.allowed_voters%rowtype;
   clean_candidate_ids bigint[];
   existing_candidate_count integer;
-  ballot_id bigint;
+  anonymous_ballot_id uuid;
+  clean_voter_name text;
+  clean_voter_name_key text;
 begin
-  if code_input is null or btrim(code_input) = '' then
-    raise exception '참여코드를 입력해 주세요.';
+  clean_voter_name := regexp_replace(btrim(coalesce(voter_name_input, '')), '\s+', ' ', 'g');
+
+  if clean_voter_name = '' then
+    raise exception '이름을 입력해 주세요.';
   end if;
+
+  if char_length(clean_voter_name) > 40 then
+    raise exception '이름은 40자 이하만 가능합니다.';
+  end if;
+
+  clean_voter_name_key := lower(clean_voter_name);
 
   select *
   into config_row
@@ -130,6 +149,15 @@ begin
 
   if now() < config_row.starts_at then
     raise exception '투표 공개 시간 전입니다.';
+  end if;
+
+  select *
+  into allowed_voter_row
+  from public.allowed_voters
+  where voter_name_key = clean_voter_name_key;
+
+  if not found then
+    raise exception '투표 가능한 이름이 아닙니다.';
   end if;
 
   select array_agg(candidate_id order by candidate_id)
@@ -159,34 +187,27 @@ begin
     raise exception '존재하지 않는 후보가 포함되어 있습니다.';
   end if;
 
-  select *
-  into voter_code_row
-  from public.voter_codes
-  where upper(code) = upper(btrim(code_input));
+  update public.allowed_voters
+  set voted_at = now()
+  where id = allowed_voter_row.id
+    and voted_at is null
+  returning * into allowed_voter_row;
 
   if not found then
-    raise exception '유효하지 않은 참여코드입니다.';
+    raise exception '이미 투표한 이름입니다.';
   end if;
 
-  if voter_code_row.used_at is not null then
-    raise exception '이미 사용된 참여코드입니다.';
-  end if;
+  insert into public.anonymous_ballots
+  default values
+  returning id into anonymous_ballot_id;
 
-  insert into public.ballots (voter_code_id)
-  values (voter_code_row.id)
-  returning id into ballot_id;
+  insert into public.anonymous_ballot_selections (ballot_id, candidate_id)
+  select anonymous_ballot_id, unnest(clean_candidate_ids);
 
-  insert into public.ballot_selections (ballot_id, candidate_id)
-  select ballot_id, unnest(clean_candidate_ids);
-
-  update public.voter_codes
-  set used_at = now()
-  where id = voter_code_row.id;
-
-  return ballot_id;
+  return anonymous_ballot_id;
 exception
   when unique_violation then
-    raise exception '이미 사용된 참여코드입니다.';
+    raise exception '이미 투표한 이름입니다.';
 end;
 $$;
 
@@ -222,16 +243,22 @@ begin
       ),
       '[]'::jsonb
     ),
-    'codes',
+    'allowed_voters',
     coalesce(
       (
-        select jsonb_agg(to_jsonb(code_rows) order by code_rows.created_at desc)
+        select jsonb_agg(
+          jsonb_build_object(
+            'voter_name', voter_rows.voter_name,
+            'has_voted', voter_rows.voted_at is not null,
+            'display_order', voter_rows.display_order
+          )
+          order by voter_rows.display_order, voter_rows.id
+        )
         from (
-          select id, code, used_at, created_at
-          from public.voter_codes
-          order by created_at desc
-          limit 100
-        ) code_rows
+          select id, voter_name, voted_at, display_order
+          from public.allowed_voters
+          order by display_order asc, id asc
+        ) voter_rows
       ),
       '[]'::jsonb
     ),
@@ -245,10 +272,10 @@ begin
             c.name as candidate_name,
             c.description,
             c.display_order,
-            count(bs.ballot_id)::integer as vote_count
+            count(absel.ballot_id)::integer as vote_count
           from public.candidates c
-          left join public.ballot_selections bs
-            on bs.candidate_id = c.id
+          left join public.anonymous_ballot_selections absel
+            on absel.candidate_id = c.id
           group by c.id, c.name, c.description, c.display_order
           order by c.display_order asc, c.id asc
         ) result_rows
@@ -258,7 +285,7 @@ begin
     'ballot_count',
     (
       select count(*)::integer
-      from public.ballots
+      from public.anonymous_ballots
     )
   )
   into payload;
@@ -295,7 +322,7 @@ begin
     raise exception '최대 선택 수는 1 이상 20 이하만 가능합니다.';
   end if;
 
-  if exists (select 1 from public.ballots) then
+  if exists (select 1 from public.anonymous_ballots) then
     raise exception '이미 투표가 들어와 기본 설정을 변경할 수 없습니다.';
   end if;
 
@@ -328,7 +355,7 @@ begin
     raise exception '후보 목록 형식이 올바르지 않습니다.';
   end if;
 
-  if exists (select 1 from public.ballots) then
+  if exists (select 1 from public.anonymous_ballots) then
     raise exception '이미 투표가 들어와 후보를 변경할 수 없습니다.';
   end if;
 
@@ -352,8 +379,8 @@ begin
 end;
 $$;
 
-create or replace function public.create_voter_codes(admin_password text, codes_input text[])
-returns integer
+create or replace function public.replace_allowed_voters(admin_password text, voter_names_input jsonb)
+returns boolean
 language plpgsql
 security definer
 set search_path = public
@@ -365,22 +392,44 @@ begin
     raise exception '관리자 비밀번호가 올바르지 않습니다.';
   end if;
 
-  if codes_input is null or cardinality(codes_input) = 0 then
-    raise exception '생성할 참여코드가 없습니다.';
+  if jsonb_typeof(voter_names_input) <> 'array' then
+    raise exception '이름 목록 형식이 올바르지 않습니다.';
   end if;
 
-  insert into public.voter_codes (code)
-  select distinct upper(btrim(code_value))
-  from unnest(codes_input) as code_value
-  where btrim(code_value) <> '';
+  if exists (select 1 from public.anonymous_ballots) then
+    raise exception '이미 투표가 들어와 이름 목록을 변경할 수 없습니다.';
+  end if;
+
+  delete from public.allowed_voters;
+
+  insert into public.allowed_voters (voter_name, voter_name_key, display_order)
+  with cleaned as (
+    select
+      regexp_replace(btrim(voter_name_value), '\s+', ' ', 'g') as voter_name,
+      lower(regexp_replace(btrim(voter_name_value), '\s+', ' ', 'g')) as voter_name_key,
+      ordinality::integer as display_order
+    from jsonb_array_elements_text(voter_names_input) with ordinality as items(voter_name_value, ordinality)
+    where btrim(voter_name_value) <> ''
+  ),
+  deduped as (
+    select distinct on (voter_name_key)
+      voter_name,
+      voter_name_key,
+      display_order
+    from cleaned
+    order by voter_name_key, display_order
+  )
+  select voter_name, voter_name_key, display_order
+  from deduped
+  order by display_order asc;
 
   get diagnostics inserted_count = row_count;
 
   if inserted_count = 0 then
-    raise exception '생성할 참여코드가 없습니다.';
+    raise exception '최소 1명의 투표 가능 이름을 입력해 주세요.';
   end if;
 
-  return inserted_count;
+  return true;
 end;
 $$;
 
@@ -391,23 +440,18 @@ grant execute on function public.verify_admin_password(text) to anon, authentica
 grant execute on function public.get_admin_dashboard(text) to anon, authenticated;
 grant execute on function public.save_admin_config(text, text, timestamptz, integer) to anon, authenticated;
 grant execute on function public.replace_candidates(text, jsonb) to anon, authenticated;
-grant execute on function public.create_voter_codes(text, text[]) to anon, authenticated;
+grant execute on function public.replace_allowed_voters(text, jsonb) to anon, authenticated;
 grant execute on function public.submit_vote(text, bigint[]) to anon, authenticated;
 
 alter table public.admin_settings enable row level security;
 alter table public.app_config enable row level security;
 alter table public.candidates enable row level security;
-alter table public.voter_codes enable row level security;
-alter table public.ballots enable row level security;
-alter table public.ballot_selections enable row level security;
+alter table public.allowed_voters enable row level security;
+alter table public.anonymous_ballots enable row level security;
+alter table public.anonymous_ballot_selections enable row level security;
 
-drop policy if exists "Admins manage config" on public.app_config;
 drop policy if exists "Public can read config" on public.app_config;
-drop policy if exists "Admins manage candidates" on public.candidates;
 drop policy if exists "Public can read candidates" on public.candidates;
-drop policy if exists "Admins manage voter codes" on public.voter_codes;
-drop policy if exists "Admins read ballots" on public.ballots;
-drop policy if exists "Admins read ballot selections" on public.ballot_selections;
 
 create policy "Public can read config"
 on public.app_config

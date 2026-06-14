@@ -19,7 +19,7 @@ const statusMessage = document.querySelector("#status-message");
 const selectionCount = document.querySelector("#selection-count");
 const candidateList = document.querySelector("#candidate-list");
 const voteForm = document.querySelector("#vote-form");
-const voterCodeInput = document.querySelector("#voter-code");
+const voterNameInput = document.querySelector("#voter-name");
 const submitButton = document.querySelector("#submit-button");
 
 let currentConfig = null;
@@ -108,9 +108,10 @@ function updateStatus(opened) {
 
   if (opened) {
     setText(voteStatus, "공개됨");
-    setText(statusMessage, "참여코드와 후보를 확인한 뒤 투표를 제출해 주세요.");
+    setText(statusMessage, "등록된 이름을 입력한 뒤 투표를 제출해 주세요.");
     votePanel.classList.remove("hidden");
-    voteSubtitle.textContent = "후보를 선택하고 참여코드로 투표할 수 있습니다.";
+    voteSubtitle.textContent =
+      "등록된 이름만 투표할 수 있고, 이름과 실제 선택 후보는 연결되지 않게 저장됩니다.";
     return;
   }
 
@@ -203,6 +204,13 @@ async function submitVote(event) {
     return;
   }
 
+  const voterName = voterNameInput.value.trim();
+
+  if (!voterName) {
+    showMessage("이름을 입력해 주세요.", "error");
+    return;
+  }
+
   const selectedCandidateIds = Array.from(
     candidateList.querySelectorAll("input[type='checkbox']:checked"),
   ).map((input) => Number(input.value));
@@ -217,7 +225,7 @@ async function submitVote(event) {
   try {
     const supabase = ensureSupabase();
     const { error } = await supabase.rpc("submit_vote", {
-      code_input: voterCodeInput.value.trim(),
+      voter_name_input: voterName,
       candidate_ids_input: selectedCandidateIds,
     });
 

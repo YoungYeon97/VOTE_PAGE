@@ -12,7 +12,9 @@
         <p class="eyebrow">ADMIN</p>
         <h1>투표 관리자 페이지</h1>
         <p class="hero-copy">
-          관리자 비밀번호를 입력한 뒤 공개 시간, 후보, 참여코드를 관리합니다.
+          관리자 비밀번호를 입력한 뒤 공개 시간과 후보를 관리합니다. 투표 가능한
+          이름을 미리 등록할 수 있고, 누가 어느 후보에게 투표했는지는 연결되지
+          않게 저장됩니다.
         </p>
       </section>
 
@@ -100,40 +102,29 @@
 
         <section class="panel">
           <div class="selection-header">
-            <h2>참여코드 생성</h2>
-            <p>생성된 코드는 1회만 사용할 수 있습니다.</p>
+            <h2>투표 가능 이름</h2>
+            <p>한 줄에 한 명씩 입력해 주세요.</p>
           </div>
 
-          <form id="code-form" class="stack">
-            <div class="inline-fields">
-              <label class="field">
-                <span>개수</span>
-                <input id="code-count" type="number" min="1" max="500" value="10" />
-              </label>
-
-              <label class="field">
-                <span>접두어</span>
-                <input id="code-prefix" type="text" maxlength="12" placeholder="VOTE" />
-              </label>
-            </div>
-
-            <button class="primary-button" type="submit">참여코드 생성</button>
+          <form id="allowed-voters-form" class="stack">
+            <label class="field">
+              <span>허용 이름 목록</span>
+              <textarea
+                id="allowed-voters-input"
+                class="code-output"
+                placeholder="홍길동&#10;김영희&#10;이철수"
+              ></textarea>
+            </label>
+            <button class="primary-button" type="submit">이름 목록 저장</button>
           </form>
-
-          <textarea
-            id="generated-codes"
-            class="code-output"
-            readonly
-            placeholder="생성된 참여코드가 여기에 표시됩니다."
-          ></textarea>
         </section>
 
         <section class="panel">
           <div class="selection-header">
-            <h2>참여코드 현황</h2>
-            <p id="code-summary">코드를 불러오는 중입니다.</p>
+            <h2>이름별 투표 현황</h2>
+            <p id="voter-summary">이름 목록을 불러오는 중입니다.</p>
           </div>
-          <div id="code-list" class="code-list"></div>
+          <div id="voter-list" class="code-list"></div>
         </section>
 
         <section class="panel">

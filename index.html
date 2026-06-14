@@ -19,8 +19,8 @@
       <section id="setup-error" class="panel hidden">
         <h2>설정이 필요합니다</h2>
         <p>
-          <code>js/config.js</code>에 Supabase URL과 anon key를 입력한 뒤 다시
-          열어 주세요.
+          <code>js/config.js</code>에 Supabase URL과 publishable key를 입력한 뒤
+          다시 열어 주세요.
         </p>
       </section>
 
@@ -43,17 +43,25 @@
       <section id="vote-panel" class="panel hidden">
         <form id="vote-form">
           <label class="field">
-            <span>참여코드</span>
+            <span>이름</span>
             <input
-              id="voter-code"
-              name="voterCode"
+              id="voter-name"
+              name="voterName"
               type="text"
               maxlength="40"
-              autocomplete="off"
-              placeholder="예: VOTE-AB12CD"
+              autocomplete="name"
+              placeholder="관리자가 등록한 이름을 입력해 주세요"
               required
             />
           </label>
+
+          <div class="inline-panel">
+            <p>
+              관리자에게 미리 등록된 이름만 투표할 수 있습니다. 같은 이름으로는 한
+              번만 투표할 수 있으며, 어떤 후보를 선택했는지는 이름과 연결되지 않게
+              저장됩니다.
+            </p>
+          </div>
 
           <div class="selection-header">
             <h2>후보 선택</h2>
