@@ -27,9 +27,56 @@ const voterList = document.querySelector("#voter-list");
 const voterSummary = document.querySelector("#voter-summary");
 const resultList = document.querySelector("#result-list");
 const resultSummary = document.querySelector("#result-summary");
+const requiredElements = {
+  adminPanel,
+  authStatus,
+  authForm,
+  authPassword,
+  lockButton,
+  adminMessage,
+  configForm,
+  configTitle,
+  configStartsAt,
+  configMaxVotes,
+  candidateForm,
+  candidateEditor,
+  addCandidateButton,
+  allowedVotersForm,
+  allowedVotersInput,
+  voterList,
+  voterSummary,
+  resultList,
+  resultSummary,
+};
+const missingRequiredElements = Object.entries(requiredElements)
+  .filter(([, element]) => !element)
+  .map(([name]) => name);
 
 let adminPassword = sessionStorage.getItem(ADMIN_PASSWORD_KEY) ?? "";
 let candidateDrafts = [];
+
+function showPageError(message) {
+  console.error(message);
+
+  if (setupError) {
+    const description = setupError.querySelector("p");
+
+    if (description) {
+      description.textContent = message;
+    }
+
+    setupError.classList.remove("hidden");
+  }
+
+  if (adminPanel) {
+    adminPanel.classList.add("hidden");
+  }
+
+  if (adminMessage) {
+    adminMessage.textContent = message;
+    adminMessage.style.color = "var(--danger)";
+  }
+}
 
 function showAdminMessage(message, tone = "normal") {
   adminMessage.textContent = message;
@@ -371,8 +418,13 @@ async function saveAllowedVoters(event) {
 }
 
 async function restoreAdminSession() {
-  if (!hasSupabaseConfig) {
-    setupError.classList.remove("hidden");
+  if (!hasSupabaseConfig()) {
+    if (setupError) {
+      setupError.classList.remove("hidden");
+    } else {
+      showPageError("js/config.js에 Supabase URL과 anon key를 입력한 뒤 다시 열어 주세요.");
+    }
+
     return;
   }
 
@@ -394,18 +446,26 @@ async function restoreAdminSession() {
   }
 }
 
-addCandidateButton.addEventListener("click", () => {
-  candidateDrafts.push({ name: "", description: "" });
-  renderCandidateEditor();
-});
+if (missingRequiredElements.length) {
+  showPageError(
+    `관리자 페이지 요소를 찾지 못했습니다: ${missingRequiredElements.join(
+      ", ",
+    )}. 브라우저에서 Ctrl+F5로 새로고침하거나 GitHub Pages 배포가 끝났는지 확인해 주세요.`,
+  );
+} else {
+  addCandidateButton.addEventListener("click", () => {
+    candidateDrafts.push({ name: "", description: "" });
+    renderCandidateEditor();
+  });
 
-authForm.addEventListener("submit", unlockAdmin);
-lockButton.addEventListener("click", lockAdmin);
-configForm.addEventListener("submit", saveConfig);
-candidateForm.addEventListener("submit", saveCandidates);
-allowedVotersForm.addEventListener("submit", saveAllowedVoters);
+  authForm.addEventListener("submit", unlockAdmin);
+  lockButton.addEventListener("click", lockAdmin);
+  configForm.addEventListener("submit", saveConfig);
+  candidateForm.addEventListener("submit", saveCandidates);
+  allowedVotersForm.addEventListener("submit", saveAllowedVoters);
 
-restoreAdminSession().catch((error) => {
-  console.error(error);
-  showAdminMessage(error.message || "관리자 페이지를 불러오지 못했습니다.", "error");
-});
+  restoreAdminSession().catch((error) => {
+    console.error(error);
+    showAdminMessage(error.message || "관리자 페이지를 불러오지 못했습니다.", "error");
+  });
+}

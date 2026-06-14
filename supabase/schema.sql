@@ -359,7 +359,7 @@ begin
     raise exception '이미 투표가 들어와 후보를 변경할 수 없습니다.';
   end if;
 
-  delete from public.candidates;
+  delete from public.candidates where true;
 
   insert into public.candidates (name, description, display_order)
   select
@@ -400,7 +400,7 @@ begin
     raise exception '이미 투표가 들어와 이름 목록을 변경할 수 없습니다.';
   end if;
 
-  delete from public.allowed_voters;
+  delete from public.allowed_voters where true;
 
   insert into public.allowed_voters (voter_name, voter_name_key, display_order)
   with cleaned as (
