@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>투표 페이지</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="app-body">
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">VOTE PAGE</p>
+        <h1 id="vote-title">투표를 불러오는 중입니다</h1>
+        <p id="vote-subtitle" class="hero-copy">
+          공개 시간과 후보 목록을 확인하고 있습니다.
+        </p>
+      </section>
+
+      <section id="setup-error" class="panel hidden">
+        <h2>설정이 필요합니다</h2>
+        <p>
+          <code>js/config.js</code>에 Supabase URL과 anon key를 입력한 뒤 다시
+          열어 주세요.
+        </p>
+      </section>
+
+      <section id="status-panel" class="panel hidden">
+        <div class="status-row">
+          <span class="status-label">공개 상태</span>
+          <strong id="vote-status">확인 중</strong>
+        </div>
+        <div class="status-row">
+          <span class="status-label">공개 시각</span>
+          <strong id="starts-at">-</strong>
+        </div>
+        <div class="status-row">
+          <span class="status-label">최대 선택 수</span>
+          <strong id="max-votes">-</strong>
+        </div>
+        <p id="status-message" class="status-message"></p>
+      </section>
+
+      <section id="vote-panel" class="panel hidden">
+        <form id="vote-form">
+          <label class="field">
+            <span>참여코드</span>
+            <input
+              id="voter-code"
+              name="voterCode"
+              type="text"
+              maxlength="40"
+              autocomplete="off"
+              placeholder="예: VOTE-AB12CD"
+              required
+            />
+          </label>
+
+          <div class="selection-header">
+            <h2>후보 선택</h2>
+            <p id="selection-count">0개 선택</p>
+          </div>
+
+          <div id="candidate-list" class="candidate-list"></div>
+
+          <button id="submit-button" class="primary-button" type="submit">
+            투표 제출
+          </button>
+        </form>
+      </section>
+
+      <section id="message-panel" class="panel hidden">
+        <p id="message-text" class="message-text"></p>
+      </section>
+    </main>
+
+    <script src="./js/config.js"></script>
+    <script type="module" src="./js/vote.js"></script>
+  </body>
+</html>

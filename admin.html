@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>투표 관리자</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="app-body">
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">ADMIN</p>
+        <h1>투표 관리자 페이지</h1>
+        <p class="hero-copy">
+          관리자 로그인 후 공개 시간, 후보, 참여코드를 관리합니다.
+        </p>
+      </section>
+
+      <section id="admin-setup-error" class="panel hidden">
+        <h2>설정이 필요합니다</h2>
+        <p>
+          <code>js/config.js</code>에 Supabase URL과 anon key를 입력한 뒤 다시
+          열어 주세요.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="selection-header">
+          <h2>관리자 로그인</h2>
+          <p id="auth-status">로그아웃 상태</p>
+        </div>
+
+        <form id="auth-form" class="stack">
+          <label class="field">
+            <span>이메일</span>
+            <input id="auth-email" type="email" autocomplete="username" required />
+          </label>
+
+          <label class="field">
+            <span>비밀번호</span>
+            <input
+              id="auth-password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+          </label>
+
+          <div class="button-row">
+            <button id="login-button" class="primary-button" type="submit">
+              로그인
+            </button>
+            <button id="signup-button" class="secondary-button" type="button">
+              회원가입
+            </button>
+            <button id="logout-button" class="secondary-button hidden" type="button">
+              로그아웃
+            </button>
+          </div>
+        </form>
+
+        <div id="bootstrap-panel" class="inline-panel hidden">
+          <p>아직 관리자가 없다면 현재 계정을 첫 관리자로 등록할 수 있습니다.</p>
+          <button id="bootstrap-button" class="secondary-button" type="button">
+            첫 관리자 등록
+          </button>
+        </div>
+      </section>
+
+      <section id="admin-panel" class="stack hidden">
+        <section class="panel">
+          <h2>기본 설정</h2>
+          <form id="config-form" class="stack">
+            <label class="field">
+              <span>투표 제목</span>
+              <input id="config-title" type="text" maxlength="80" required />
+            </label>
+
+            <label class="field">
+              <span>공개 시작 시각</span>
+              <input id="config-starts-at" type="datetime-local" required />
+            </label>
+
+            <label class="field">
+              <span>1인당 최대 선택 수</span>
+              <input
+                id="config-max-votes"
+                type="number"
+                min="1"
+                max="20"
+                required
+              />
+            </label>
+
+            <button class="primary-button" type="submit">설정 저장</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="selection-header">
+            <h2>후보 목록</h2>
+            <p>후보 순서대로 표시됩니다.</p>
+          </div>
+
+          <form id="candidate-form" class="stack">
+            <div id="candidate-editor" class="stack"></div>
+            <div class="button-row">
+              <button id="add-candidate-button" class="secondary-button" type="button">
+                후보 추가
+              </button>
+              <button class="primary-button" type="submit">후보 저장</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="selection-header">
+            <h2>참여코드 생성</h2>
+            <p>생성된 코드는 1회만 사용할 수 있습니다.</p>
+          </div>
+
+          <form id="code-form" class="stack">
+            <div class="inline-fields">
+              <label class="field">
+                <span>개수</span>
+                <input id="code-count" type="number" min="1" max="500" value="10" />
+              </label>
+
+              <label class="field">
+                <span>접두어</span>
+                <input id="code-prefix" type="text" maxlength="12" placeholder="VOTE" />
+              </label>
+            </div>
+
+            <button class="primary-button" type="submit">참여코드 생성</button>
+          </form>
+
+          <textarea
+            id="generated-codes"
+            class="code-output"
+            readonly
+            placeholder="생성된 참여코드가 여기에 표시됩니다."
+          ></textarea>
+        </section>
+
+        <section class="panel">
+          <div class="selection-header">
+            <h2>참여코드 현황</h2>
+            <p id="code-summary">코드를 불러오는 중입니다.</p>
+          </div>
+          <div id="code-list" class="code-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="selection-header">
+            <h2>투표 결과</h2>
+            <p id="result-summary">결과를 불러오는 중입니다.</p>
+          </div>
+          <div id="result-list" class="result-list"></div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <p id="admin-message" class="message-text"></p>
+      </section>
+    </main>
+
+    <script src="./js/config.js"></script>
+    <script type="module" src="./js/admin.js"></script>
+  </body>
+</html>
